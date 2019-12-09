@@ -16,7 +16,7 @@ bl_info = {
     "author": "kreny",
     "description": "",
     "blender": (2, 80, 0),
-    "version": (0, 1, 1),
+    "version": (0, 1, 2),
     "location": "",
     "warning": "",
     "category": "Breath of the Wild",
@@ -77,14 +77,26 @@ def parse_physics(context, filepath):
 
 
 def generate_physics(
-    context, filepath, physics_type, vhacd, remove_hulls_after_export, binary=False
+    context,
+    filepath: str,
+    physics_type: str,
+    vhacd: bool,
+    manual: bool,
+    remove_hulls_after_export: bool,
+    binary: bool = False,
 ):
     scene = bpy.context.scene
+    if not scene.objects:
+        ShowMessageBox("No objects exist", "What are you up to?")
+        return {"CANCELLED"}
 
     if vhacd:
         try:
             bpy.ops.object.select_all(action="SELECT")
-            bpy.ops.object.vhacd("EXEC_DEFAULT")
+            if manual:
+                bpy.ops.object.vhacd("INVOKE_DEFAULT")
+            else:
+                bpy.ops.object.vhacd("EXEC_DEFAULT")
         except Exception as e:
             ShowMessageBox("V-HACD Error", f"{e}")
             return {"CANCELLED"}
@@ -118,10 +130,10 @@ def generate_physics(
             "                      shape_type: !str32 polytope\n"
             "                      vertex_num: {1}\n"
             "{2}\n"
-            "                      material: !str32 Metal\n"
-            "                      sub_material: !str32 Metal\n"
-            "                      wall_code: !str32 None\n"
-            "                      floor_code: !str32 None\n"
+            "                      material: !str32 {3}\n"
+            "                      sub_material: !str32 {4}\n"
+            "                      wall_code: !str32 {5}\n"
+            "                      floor_code: !str32 {6}\n"
         )
 
         shape_template_u = (
@@ -135,7 +147,6 @@ def generate_physics(
             "                      floor_code: !str32 None\n"
         )
 
-        scene = bpy.context.scene
         hulls = [obj for obj in scene.objects if "_hull_" in obj.name]
 
         shapes_metal = ""
@@ -152,6 +163,12 @@ def generate_physics(
                         for o, co in enumerate(vertices)
                     ]
                 ),
+                hull.get("botw_material") if hull.get("botw_material") else "Metal",
+                hull.get("botw_sub_material")
+                if hull.get("botw_sub_material")
+                else "Metal_Heavy",
+                hull.get("botw_wall_code") if hull.get("botw_wall_code") else "None",
+                hull.get("botw_floor_code") if hull.get("botw_floor_code") else "None",
             )
             shapes_u += shape_template_u.format(
                 i,
@@ -165,7 +182,6 @@ def generate_physics(
             )
 
         output = content.format(len(hulls), shapes_metal, shapes_u)
-
     elif physics_type in ("FIXED", "DYNAMIC"):
         rigid_body_template = (
             "                RigidBody_{0}: !list\n"
@@ -209,17 +225,17 @@ def generate_physics(
         )
 
         shape_param_template = (
-            "                    ShapeParam_{}: !obj #{}\n"
+            "                    ShapeParam_{0}: !obj #{1}\n"
             "                      shape_type: !str32 polytope\n"
-            "                      vertex_num: {}\n"
-            "{}\n"
-            "                      material: !str32 Metal\n"
-            "                      sub_material: !str32 Metal_Heavy\n"
-            "                      wall_code: !str32 NoClimb\n"
-            "                      floor_code: !str32 None\n"
+            "                      vertex_num: {2}\n"
+            "{3}\n"
+            "                      material: !str32 {4}\n"
+            "                      sub_material: !str32 {5}\n"
+            "                      wall_code: !str32 {6}\n"
+            "                      floor_code: !str32 {7}\n"
         )
 
-        vertex_template = "                      vertex_{}: !vec3 [{}, {}, {}]"
+        vertex_template = "                      vertex_{0}: !vec3 [{1}, {2}, {3}]"
 
         result = ""
 
@@ -230,11 +246,28 @@ def generate_physics(
             for obj in scene.objects
             if (not ("_hull_" in obj.name)) and (obj.type == "MESH")
         ]
+        if not non_hull_objects:
+            ShowMessageBox("ERROR", "You need to keep the original mesh.")
+            return {"CANCELLED"}
         non_hull_index = 0
         hulls = []
         for obj in non_hull_objects:
             shape_hull_index = 0
             shapes = ""
+            obj_material = (
+                obj.get("botw_material") if obj.get("botw_material") else "Metal"
+            )
+            obj_sub_material = (
+                obj.get("botw_sub_material")
+                if obj.get("botw_sub_material")
+                else "Metal_Heavy"
+            )
+            obj_wall_code = (
+                obj.get("botw_wall_code") if obj.get("botw_wall_code") else "NoClimb"
+            )
+            obj_floor_code = (
+                obj.get("botw_floor_code") if obj.get("botw_floor_code") else "None"
+            )
             for shape_hull in set(scene.objects) - set(non_hull_objects):
                 if not (shape_hull.name.split("_hull_")[0] == obj.name):
                     continue
@@ -256,6 +289,18 @@ def generate_physics(
                             for o, co in enumerate(verts)
                         ]
                     ),
+                    shape_hull.get("botw_material")
+                    if shape_hull.get("botw_material")
+                    else obj_material,
+                    shape_hull.get("botw_sub_material")
+                    if shape_hull.get("botw_sub_material")
+                    else obj_sub_material,
+                    shape_hull.get("botw_wall_code")
+                    if shape_hull.get("botw_wall_code")
+                    else obj_wall_code,
+                    shape_hull.get("botw_floor_code")
+                    if shape_hull.get("botw_floor_code")
+                    else obj_floor_code,
                 )
                 shape_hull_index += 1
             rigid_bodies += rigid_body_template.format(
@@ -298,10 +343,161 @@ def generate_physics(
     return {"FINISHED"}
 
 
+class SelectParams(Operator):
+    """Select various parameters for BotW physics meshes"""
+
+    bl_idname = "botw.select_params"
+    bl_label = "Select BotW physics parameters"
+    bl_description = "Choose physics parameters for your shapes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    material: EnumProperty(
+        name="Material",
+        description="Material of the object",
+        items=(
+            ("AirWall", "AirWall", "AirWall"),
+            ("Barrier", "Barrier", "Barrier"),
+            ("Bone", "Bone", "Bone"),
+            ("CharControl", "CharControl", "CharControl"),
+            ("Cloth", "Cloth", "Cloth"),
+            ("Conveyer", "Conveyer", "Conveyer"),
+            ("Glass", "Glass", "Glass"),
+            ("Grass", "Grass", "Grass"),
+            ("Grudge", "Grudge", "Grudge"),
+            ("GuardianFoot", "GuardianFoot", "GuardianFoot"),
+            ("Ice", "Ice", "Ice"),
+            ("LaunchPad", "LaunchPad", "LaunchPad"),
+            ("Lava", "Lava", "Lava"),
+            ("MagicBall", "MagicBall", "MagicBall"),
+            ("Meat", "Meat", "Meat"),
+            ("Metal", "Metal", "Metal"),
+            ("Misc", "Misc", "Misc"),
+            ("Ragdoll", "Ragdoll", "Ragdoll"),
+            ("Rope", "Rope", "Rope"),
+            ("Snow", "Snow", "Snow"),
+            ("Soil", "Soil", "Soil"),
+            ("Stone", "Stone", "Stone"),
+            ("Surfing", "Surfing", "Surfing"),
+            ("Undefined", "Undefined", "Undefined"),
+            ("Vegetable", "Vegetable", "Vegetable"),
+            ("Water", "Water", "Water"),
+            ("WireNet", "WireNet", "WireNet"),
+            ("Wood", "Wood", "Wood"),
+        ),
+        default="Metal"
+    )
+
+    sub_material: EnumProperty(
+        name="Sub Material",
+        description="Sub material of the object",
+        items=(
+            ("AirWall", "AirWall", "AirWall"),
+            ("Bone", "Bone", "Bone"),
+            ("CharControl", "CharControl", "CharControl"),
+            ("Cloth", "Cloth", "Cloth"),
+            ("Cloth_Leather", "Cloth_Leather", "Cloth_Leather"),
+            ("Conveyer", "Conveyer", "Conveyer"),
+            ("Glass", "Glass", "Glass"),
+            ("Grass", "Grass", "Grass"),
+            ("Grass_Leaf", "Grass_Leaf", "Grass_Leaf"),
+            ("Grass_Long", "Grass_Long", "Grass_Long"),
+            ("Grudge", "Grudge", "Grudge"),
+            ("GuardianFoot", "GuardianFoot", "GuardianFoot"),
+            ("Ice", "Ice", "Ice"),
+            ("Ice_Hard", "Ice_Hard", "Ice_Hard"),
+            ("LaunchPad", "LaunchPad", "LaunchPad"),
+            ("Lava", "Lava", "Lava"),
+            ("MagicBall", "MagicBall", "MagicBall"),
+            ("Meat", "Meat", "Meat"),
+            ("Metal", "Metal", "Metal"),
+            ("Metal_Heavy", "Metal_Heavy", "Metal_Heavy"),
+            ("Metal_Light", "Metal_Light", "Metal_Light"),
+            ("Misc", "Misc", "Misc"),
+            ("PriestWall", "PriestWall", "PriestWall"),
+            ("Ragdoll", "Ragdoll", "Ragdoll"),
+            ("Rope", "Rope", "Rope"),
+            ("Snow", "Snow", "Snow"),
+            ("Soil", "Soil", "Soil"),
+            ("Stone", "Stone", "Stone"),
+            ("Stone_DgnHeavy", "Stone_DgnHeavy", "Stone_DgnHeavy"),
+            ("Stone_DgnLight", "Stone_DgnLight", "Stone_DgnLight"),
+            ("Stone_Heavy", "Stone_Heavy", "Stone_Heavy"),
+            ("Stone_Light", "Stone_Light", "Stone_Light"),
+            ("Stone_Marble", "Stone_Marble", "Stone_Marble"),
+            ("Surfing", "Surfing", "Surfing"),
+            ("Undefined", "Undefined", "Undefined"),
+            ("Vegetable", "Vegetable", "Vegetable"),
+            ("Water", "Water", "Water"),
+            ("WireNet", "WireNet", "WireNet"),
+            ("Wood", "Wood", "Wood"),
+            ("Wood_Thick", "Wood_Thick", "Wood_Thick"),
+            ("Wood_Thin", "Wood_Thin", "Wood_Thin"),
+        ),
+        default="Metal_Heavy"
+    )
+
+    wall_code: EnumProperty(
+        name="Wall Code",
+        description="Wall code of the object",
+        items=(
+            ("Dummy", "Dummy", "Dummy"),
+            ("Hang", "Hang", "Hang"),
+            ("NoClimb", "NoClimb", "NoClimb"),
+            ("NoDashUpAndNoClimb", "NoDashUpAndNoClimb", "NoDashUpAndNoClimb"),
+            ("None", "None", "None"),
+        ),
+        default="NoClimb"
+    )
+
+    floor_code: EnumProperty(
+        name="Floor Code",
+        description="Floor code of the object",
+        items=(
+            ("Attach", "Attach", "Attach"),
+            ("Dummy", "Dummy", "Dummy"),
+            ("FlowRight", "FlowRight", "FlowRight"),
+            ("FlowStraight", "FlowStraight", "FlowStraight"),
+            ("NarrowPlace", "NarrowPlace", "NarrowPlace"),
+            ("NoImpulseUpperMove", "NoImpulseUpperMove", "NoImpulseUpperMove"),
+            ("None", "None", "None"),
+            ("NoPreventFall", "NoPreventFall", "NoPreventFall"),
+            ("Return", "Return", "Return"),
+            ("Slip", "Slip", "Slip"),
+        ),
+        default="None"
+    )
+
+    def execute(self, context):
+        try:
+            selected_objs = bpy.context.selected_objects
+            for obj in selected_objs:
+                obj["botw_material"] = self.material
+                obj["botw_sub_material"] = self.sub_material
+                obj["botw_wall_code"] = self.wall_code
+                obj["botw_floor_code"] = self.floor_code
+            return {"FINISHED"}
+        except Exception as e:
+            print(e)
+            ShowMessageBox("[MATERIAL ERROR]", f"{e}")
+            return {"CANCELLED"}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column()
+        col.prop(self, "material")
+        col.prop(self, "sub_material")
+        col.prop(self, "wall_code")
+        col.prop(self, "floor_code")
+
+
 class ImportPhysics(Operator, ExportHelper):
     """Import BotW Physics File"""
 
-    bl_idname = "import_physics.yml"
+    bl_idname = "botw.import_physics_yml"
     bl_label = "Import BotW physics file (.yml)"
     filename_ext = ".yml"
 
@@ -314,7 +510,7 @@ class ImportPhysics(Operator, ExportHelper):
 class ExportPhysics(Operator, ExportHelper):
     """Export BotW Physics File"""
 
-    bl_idname = "export_physics.yml"
+    bl_idname = "botw.export_physics_yml"
     bl_label = "Export BotW physics file (.physics.yml)"
     filename_ext = ".physics.yml"
 
@@ -341,6 +537,12 @@ class ExportPhysics(Operator, ExportHelper):
         default=True,
     )
 
+    manual: BoolProperty(
+        name="Manual (Broken at the moment, don't use)",
+        description="Manually adjust V-HACD settings before exporting",
+        default=False,
+    )
+
     remove_hulls_after_export: BoolProperty(
         name="Remove hulls after export",
         description="Remove convex hulls generated by V-HACD after exporting the physics file (doesn't matter if you don't use V-HACD)",
@@ -353,6 +555,7 @@ class ExportPhysics(Operator, ExportHelper):
             self.filepath,
             physics_type=self.physics_type,
             vhacd=self.vhacd,
+            manual=self.manual,
             remove_hulls_after_export=self.remove_hulls_after_export,
         )
 
@@ -362,13 +565,14 @@ class ExportPhysics(Operator, ExportHelper):
         col.label(text="Additional options:")
         col.prop(self, "physics_type")
         col.prop(self, "vhacd")
+        col.prop(self, "manual")
         col.prop(self, "remove_hulls_after_export")
 
 
 class ExportPhysicsBinary(Operator, ExportHelper):
     """Export BotW Binary Physics File"""
 
-    bl_idname = "export_bphysics.bphysics"
+    bl_idname = "botw.export_physics_bphysics"
     bl_label = "Export BotW binary physics file (.bphysics)"
     filename_ext = ".bphysics"
 
@@ -395,6 +599,12 @@ class ExportPhysicsBinary(Operator, ExportHelper):
         default=True,
     )
 
+    manual: BoolProperty(
+        name="Manual (Broken at the moment, don't use)",
+        description="Manually adjust V-HACD settings before exporting",
+        default=False,
+    )
+
     remove_hulls_after_export: BoolProperty(
         name="Remove hulls after export",
         description="Remove convex hulls generated by V-HACD after exporting the physics file (doesn't matter if you don't use V-HACD)",
@@ -408,6 +618,7 @@ class ExportPhysicsBinary(Operator, ExportHelper):
             binary=True,
             physics_type=self.physics_type,
             vhacd=self.vhacd,
+            manual=self.manual,
             remove_hulls_after_export=self.remove_hulls_after_export,
         )
 
@@ -417,6 +628,7 @@ class ExportPhysicsBinary(Operator, ExportHelper):
         col.label(text="Additional options:")
         col.prop(self, "physics_type")
         col.prop(self, "vhacd")
+        col.prop(self, "manual")
         col.prop(self, "remove_hulls_after_export")
 
 
@@ -434,6 +646,7 @@ def MenuExport(self, context):
 
 
 def register():
+    bpy.utils.register_class(SelectParams)
     bpy.utils.register_class(ImportPhysics)
     bpy.utils.register_class(ExportPhysics)
     bpy.utils.register_class(ExportPhysicsBinary)
@@ -442,6 +655,7 @@ def register():
 
 
 def unregister():
+    bpy.utils.unregister_class(SelectParams)
     bpy.utils.unregister_class(ImportPhysics)
     bpy.utils.unregister_class(ExportPhysics)
     bpy.utils.unregister_class(ExportPhysicsBinary)
