@@ -16,7 +16,7 @@ bl_info = {
     "author": "kreny",
     "description": "",
     "blender": (2, 80, 0),
-    "version": (0, 1, 3),
+    "version": (0, 1, 4),
     "location": "",
     "warning": "",
     "category": "Breath of the Wild",
@@ -28,13 +28,8 @@ from math import radians
 
 import bpy
 import mathutils
-from bpy.props import (
-    BoolProperty,
-    EnumProperty,
-    StringProperty,
-    IntProperty,
-    FloatProperty,
-)
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
+                       StringProperty)
 from bpy.types import Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
@@ -129,7 +124,7 @@ def generate_physics(
             return {"CANCELLED"}
 
     if binary:
-        filepath_yml = filepath.replace(".bphysics", ".physics.yml")
+        filepath_yml = filepath + (".physics.yml")
         filepath_bin = filepath
     else:
         filepath_yml = filepath
@@ -368,7 +363,7 @@ class SelectParams(Operator):
     bl_idname = "botw.select_params"
     bl_label = "Select BotW physics parameters"
     bl_description = "Choose physics parameters for your shapes"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER", "PRESET", "UNDO"}
 
     material: EnumProperty(
         name="Material",
@@ -531,6 +526,7 @@ class ExportPhysics(Operator, ExportHelper):
 
     bl_idname = "botw.export_physics_yml"
     bl_label = "Export BotW physics file (.physics.yml)"
+    bl_options = {"REGISTER", "PRESET"}
     filename_ext = ".physics.yml"
 
     filter_glob: StringProperty(default="*.physics.yml", options={"HIDDEN"})
@@ -750,6 +746,7 @@ class ExportPhysicsBinary(Operator, ExportHelper):
 
     bl_idname = "botw.export_physics_bphysics"
     bl_label = "Export BotW binary physics file (.bphysics)"
+    bl_options = {"REGISTER", "PRESET"}
     filename_ext = ".bphysics"
 
     filter_glob: StringProperty(default="*.bphysics", options={"HIDDEN"})
