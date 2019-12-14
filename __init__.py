@@ -16,7 +16,7 @@ bl_info = {
     "author": "kreny",
     "description": "",
     "blender": (2, 80, 0),
-    "version": (0, 1, 4),
+    "version": (0, 1, 5),
     "location": "",
     "warning": "",
     "category": "Breath of the Wild",
@@ -28,21 +28,19 @@ from math import radians
 
 import bpy
 import mathutils
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
-                       StringProperty)
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    IntProperty,
+    StringProperty,
+)
 from bpy.types import Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 
-def ShowMessageBox(title, message, icon="INFO"):
-    def draw(self, context):
-        self.layout.label(text=message)
-
-    bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
-
-
-def parse_physics(context, filepath):
-    filepath_obj = filepath + ".obj"
+def physics_to_obj(self, context, filepath):
+    filepath_obj = filepath + ".temp.obj"
     output = ""
     obj_num = 0
     obj_template = "o Shape_{}\n"
@@ -63,21 +61,43 @@ def parse_physics(context, filepath):
 
     with open(filepath_obj, "w") as f:
         f.write(output)
+    return filepath_obj
+
+
+def parse_physics(self, context, filepath):
+    if filepath.endswith(".bphysics"):
+        filepath_yml = filepath + ".yml.temp"
+        try:
+            command = "aamp {} {}".format(filepath, filepath_yml)
+            print(subprocess.check_output(command, shell=True))
+
+        except Exception as e:
+            print(e)
+            self.report(
+                {"ERROR"}, "Make sure you have AAMP installed (pip install aamp)",
+            )
+            return {"CANCELLED"}
+    else:
+        filepath_yml = filepath
+
+    filepath_obj = physics_to_obj(self, context, filepath_yml)
+    if filepath_yml.endswith(".temp"):
+        os.remove(filepath_yml)
 
     try:
         bpy.ops.import_scene.obj("EXEC_DEFAULT", filepath=filepath_obj)
     except Exception as e:
         print(e)
-        ShowMessageBox(".OBJ Import Error", f"{e}")
+        self.report({"ERROR"}, f"{e}")
         return {"CANCELLED"}
-    try:
+    finally:
         os.remove(filepath_obj)
-    except Exception as e:
-        print(e)
+    self.report({"INFO"}, "Completed successfully")
     return {"FINISHED"}
 
 
 def generate_physics(
+    self,
     context,
     filepath: str,
     physics_type: str,
@@ -88,7 +108,7 @@ def generate_physics(
 ):
     scene = bpy.context.scene
     if not scene.objects:
-        ShowMessageBox("No objects exist", "What are you up to?")
+        self.report({"ERROR"}, "No objects exist in the scene")
         return {"CANCELLED"}
 
     if vhacd:
@@ -112,22 +132,19 @@ def generate_physics(
                 minVolumePerCH=vhacd_params[13],
             )
         except Exception as e:
-            ShowMessageBox("V-HACD Error", f"{e}")
+            self.report({"ERROR"}, f"V-HACD Error:\n{e}")
             return {"CANCELLED"}
     else:
         objects = [obj for obj in scene.objects if "_hull_" in obj.name]
         if not objects:
-            ShowMessageBox(
-                "No convex hulls found",
-                "You probably didn't generate your collisions, dummy.",
-            )
+            self.report({"ERROR"}, "No convex hulls found")
             return {"CANCELLED"}
 
+    filepath = filepath.replace(".physics.yml", "").replace(".bphysics", "")
+    filepath_yml = filepath + ".physics.yml"
     if binary:
-        filepath_yml = filepath + (".physics.yml")
-        filepath_bin = filepath
-    else:
-        filepath_yml = filepath
+        filepath_yml = filepath_yml + ".temp"
+        filepath_bin = filepath + ".bphysics"
     script_file = os.path.realpath(__file__)
     directory = os.path.dirname(script_file)
     default_file = os.path.join(
@@ -261,7 +278,7 @@ def generate_physics(
             if (not ("_hull_" in obj.name)) and (obj.type == "MESH")
         ]
         if not non_hull_objects:
-            ShowMessageBox("ERROR", "You need to keep the original mesh.")
+            self.report({"ERROR"}, "You need to keep the original mesh")
             return {"CANCELLED"}
         non_hull_index = 0
         hulls = []
@@ -331,7 +348,7 @@ def generate_physics(
             non_hull_index += 1
         output = content.format(non_hull_index, rigid_bodies.rstrip("\n"))
     else:
-        ShowMessageBox("Something is wrong", "Huh?")
+        self.report({"ERROR"}, "What have you done?")
         return {"CANCELLED"}
 
     with open(filepath_yml, "w") as output_file:
@@ -343,8 +360,8 @@ def generate_physics(
             print(subprocess.check_output(command, shell=True))
         except Exception as e:
             print(e)
-            ShowMessageBox(
-                "AAMP Error", "Make sure you have AAMP installed (pip install aamp)",
+            self.report(
+                {"ERROR"}, "Make sure you have AAMP installed (pip install aamp)",
             )
             return {"CANCELLED"}
         finally:
@@ -354,7 +371,16 @@ def generate_physics(
         for hull in hulls:
             hull.select_set(True)
         bpy.ops.object.delete()
+    self.report({"INFO"}, "Completed successfully")
     return {"FINISHED"}
+
+
+def change_extension(self, context):
+    filepath = self.filepath.split("/")
+    filename = filepath[-1]
+    ext = ".bphysics" if self.binary else ".physics.yml"
+    self.filepath = "/".join(filepath[:-1])+filename+ext
+    print(self.filepath)
 
 
 class SelectParams(Operator):
@@ -484,6 +510,9 @@ class SelectParams(Operator):
     def execute(self, context):
         try:
             selected_objs = bpy.context.selected_objects
+            if not selected_objs:
+                self.report({"ERROR", "No objects selected"})
+                return {"CANCELLED"}
             for obj in selected_objs:
                 obj["botw_material"] = self.material
                 obj["botw_sub_material"] = self.sub_material
@@ -492,7 +521,7 @@ class SelectParams(Operator):
             return {"FINISHED"}
         except Exception as e:
             print(e)
-            ShowMessageBox("[MATERIAL ERROR]", f"{e}")
+            self.report({"ERROR"}, f"BOTW_PARAMS:\n{e}")
             return {"CANCELLED"}
 
     def invoke(self, context, event):
@@ -511,25 +540,39 @@ class SelectParams(Operator):
 class ImportPhysics(Operator, ImportHelper):
     """Import BotW Physics File"""
 
-    bl_idname = "botw.import_physics_yml"
-    bl_label = "Import BotW physics file (.yml)"
-    filename_ext = ".yml"
+    bl_idname = "botw.import_physics"
+    bl_label = "Import BotW physics file"
+    filename_ext = ""
 
-    filter_glob: StringProperty(default="*.yml", options={"HIDDEN"})
+    filter_glob: StringProperty(default="*.yml;*.bphysics", options={"HIDDEN"})
 
     def execute(self, context):
-        return parse_physics(context, self.filepath)
+        return parse_physics(self, context, self.filepath)
 
 
 class ExportPhysics(Operator, ExportHelper):
     """Export BotW Physics File"""
 
-    bl_idname = "botw.export_physics_yml"
-    bl_label = "Export BotW physics file (.physics.yml)"
-    bl_options = {"REGISTER", "PRESET"}
-    filename_ext = ".physics.yml"
+    check_existing: BoolProperty(
+        name="Check existing",
+        description="Check and warn on overwriting existing files",
+        default=False,
+        options={"HIDDEN"},
+    )
 
-    filter_glob: StringProperty(default="*.physics.yml", options={"HIDDEN"})
+    bl_idname = "botw.export_physics"
+    bl_label = "Export BotW physics file"
+    bl_options = {"REGISTER", "PRESET"}
+    filename_ext = ""
+
+    filter_glob: StringProperty(default="*.physics.yml;*.bphysics", options={"HIDDEN"})
+
+    binary: BoolProperty(
+        name="Binary",
+        description="Export as Binary Physics file (.bphysics)",
+        default=True,
+        update=change_extension
+    )
 
     physics_type: EnumProperty(
         name="Actor type",
@@ -557,7 +600,8 @@ class ExportPhysics(Operator, ExportHelper):
         description="Remove convex hulls generated by V-HACD after exporting the physics file (doesn't matter if you don't use V-HACD)",
         default=True,
     )
-
+    # fmt: off
+  # VHACD
     # pre-process options
     remove_doubles: BoolProperty(
         name="Remove Doubles",
@@ -682,11 +726,16 @@ class ExportPhysics(Operator, ExportHelper):
         max=0.01,
         precision=5,
     )
+  # ---
+    pass
+    # fmt: on
 
     def execute(self, context):
         return generate_physics(
+            self,
             context,
             self.filepath,
+            binary=self.binary,
             physics_type=self.physics_type,
             vhacd=self.vhacd,
             remove_hulls_after_export=self.remove_hulls_after_export,
@@ -714,227 +763,7 @@ class ExportPhysics(Operator, ExportHelper):
         col = layout.column()
         col.label(text="Physics Options:")
         col.prop(self, "physics_type")
-        col.prop(self, "vhacd")
-
-        layout.separator()
-        col = layout.column()
-        col.label(text="Pre-Processing Options:")
-        col.prop(self, "remove_hulls_after_export")
-        col.prop(self, "remove_doubles")
-        col.prop(self, "apply_transforms")
-
-        layout.separator()
-        col = layout.column()
-        col.label(text="V-HACD Parameters:")
-        col.prop(self, "resolution")
-        col.prop(self, "depth")
-        col.prop(self, "concavity")
-        col.prop(self, "planeDownsampling")
-        col.prop(self, "convexhullDownsampling")
-        row = col.row()
-        row.prop(self, "alpha")
-        row.prop(self, "beta")
-        row.prop(self, "gamma")
-        col.prop(self, "pca")
-        col.prop(self, "mode")
-        col.prop(self, "maxNumVerticesPerCH")
-        col.prop(self, "minVolumePerCH")
-
-
-class ExportPhysicsBinary(Operator, ExportHelper):
-    """Export BotW Binary Physics File"""
-
-    bl_idname = "botw.export_physics_bphysics"
-    bl_label = "Export BotW binary physics file (.bphysics)"
-    bl_options = {"REGISTER", "PRESET"}
-    filename_ext = ".bphysics"
-
-    filter_glob: StringProperty(default="*.bphysics", options={"HIDDEN"})
-
-    physics_type: EnumProperty(
-        name="Actor type",
-        description="Select actor type. Depending on what you select, a different file will be generated.",
-        items=(
-            (
-                "FIXED",
-                "Static/Structure",
-                "Static actor type (for buildings, static objects)",
-            ),
-            ("DYNAMIC", "Dynamic/Object", "Dynamic actor type (for moving actors)"),
-            ("WEAPON", "Weapon", "Weapon actor type (for swords)"),
-        ),
-        default="FIXED",
-    )
-
-    vhacd: BoolProperty(
-        name="Use V-HACD",
-        description="Auto-generate collision using V-HACD (Disable if generated manually)",
-        default=True,
-    )
-
-    remove_hulls_after_export: BoolProperty(
-        name="Remove hulls after export",
-        description="Remove convex hulls generated by V-HACD after exporting the physics file (doesn't matter if you don't use V-HACD)",
-        default=True,
-    )
-
-    # pre-process options
-    remove_doubles: BoolProperty(
-        name="Remove Doubles",
-        description="Collapse overlapping vertices in generated mesh",
-        default=True,
-    )
-
-    apply_transforms: EnumProperty(
-        name="Apply",
-        description="Apply Transformations to generated mesh",
-        items=(
-            (
-                "LRS",
-                "Location + Rotation + Scale",
-                "Apply location, rotation and scale",
-            ),
-            ("RS", "Rotation + Scale", "Apply rotation and scale"),
-            ("S", "Scale", "Apply scale only"),
-            ("NONE", "None", "Do not apply transformations"),
-        ),
-        default="NONE",
-    )
-
-    # VHACD parameters
-    resolution: IntProperty(
-        name="Voxel Resolution",
-        description="Maximum number of voxels generated during the voxelization stage",
-        default=100000,
-        min=10000,
-        max=64000000,
-    )
-
-    depth: IntProperty(
-        name="Clipping Depth",
-        description='Maximum number of clipping stages. During each split stage, all the model parts (with a concavity higher than the user defined threshold) are clipped according the "best" clipping plane',
-        default=20,
-        min=1,
-        max=32,
-    )
-
-    concavity: FloatProperty(
-        name="Maximum Concavity",
-        description="Maximum concavity",
-        default=0.0025,
-        min=0.0,
-        max=1.0,
-        precision=4,
-    )
-
-    planeDownsampling: IntProperty(
-        name="Plane Downsampling",
-        description='Granularity of the search for the "best" clipping plane',
-        default=4,
-        min=1,
-        max=16,
-    )
-
-    convexhullDownsampling: IntProperty(
-        name="Convex Hull Downsampling",
-        description="Precision of the convex-hull generation process during the clipping plane selection stage",
-        default=4,
-        min=1,
-        max=16,
-    )
-
-    alpha: FloatProperty(
-        name="Alpha",
-        description="Bias toward clipping along symmetry planes",
-        default=0.05,
-        min=0.0,
-        max=1.0,
-        precision=4,
-    )
-
-    beta: FloatProperty(
-        name="Beta",
-        description="Bias toward clipping along revolution axes",
-        default=0.05,
-        min=0.0,
-        max=1.0,
-        precision=4,
-    )
-
-    gamma: FloatProperty(
-        name="Gamma",
-        description="Maximum allowed concavity during the merge stage",
-        default=0.00125,
-        min=0.0,
-        max=1.0,
-        precision=5,
-    )
-
-    pca: BoolProperty(
-        name="PCA",
-        description="Enable/disable normalizing the mesh before applying the convex decomposition",
-        default=False,
-    )
-
-    mode: EnumProperty(
-        name="ACD Mode",
-        description="Approximate convex decomposition mode",
-        items=(
-            ("VOXEL", "Voxel", "Voxel ACD Mode"),
-            ("TETRAHEDRON", "Tetrahedron", "Tetrahedron ACD Mode"),
-        ),
-        default="VOXEL",
-    )
-
-    maxNumVerticesPerCH: IntProperty(
-        name="Maximum Vertices Per CH",
-        description="Maximum number of vertices per convex-hull",
-        default=32,
-        min=4,
-        max=1024,
-    )
-
-    minVolumePerCH: FloatProperty(
-        name="Minimum Volume Per CH",
-        description="Minimum volume to add vertices to convex-hulls",
-        default=0.0001,
-        min=0.0,
-        max=0.01,
-        precision=5,
-    )
-
-    def execute(self, context):
-        return generate_physics(
-            context,
-            self.filepath,
-            binary=True,
-            physics_type=self.physics_type,
-            vhacd=self.vhacd,
-            remove_hulls_after_export=self.remove_hulls_after_export,
-            vhacd_params=[
-                self.remove_doubles,
-                self.apply_transforms,
-                self.resolution,
-                self.depth,
-                self.concavity,
-                self.planeDownsampling,
-                self.convexhullDownsampling,
-                self.alpha,
-                self.beta,
-                self.gamma,
-                self.pca,
-                self.mode,
-                self.maxNumVerticesPerCH,
-                self.minVolumePerCH,
-            ],
-        )
-
-    def draw(self, context):
-        layout = self.layout
-
-        col = layout.column()
-        col.label(text="Physics Options:")
-        col.prop(self, "physics_type")
+        col.prop(self, "binary")
         col.prop(self, "vhacd")
 
         layout.separator()
@@ -963,23 +792,17 @@ class ExportPhysicsBinary(Operator, ExportHelper):
 
 
 def MenuImport(self, context):
-    self.layout.operator(ImportPhysics.bl_idname, text="BotW Physics File (.yml)")
+    self.layout.operator(ImportPhysics.bl_idname, text="BotW Physics File")
 
 
 def MenuExport(self, context):
-    self.layout.operator(
-        ExportPhysics.bl_idname, text="BotW Physics File (.physics.yml)"
-    )
-    self.layout.operator(
-        ExportPhysicsBinary.bl_idname, text="BotW Binary Physics File (.bphysics)"
-    )
+    self.layout.operator(ExportPhysics.bl_idname, text="BotW Physics File")
 
 
 def register():
     bpy.utils.register_class(SelectParams)
     bpy.utils.register_class(ImportPhysics)
     bpy.utils.register_class(ExportPhysics)
-    bpy.utils.register_class(ExportPhysicsBinary)
     bpy.types.TOPBAR_MT_file_import.append(MenuImport)
     bpy.types.TOPBAR_MT_file_export.append(MenuExport)
 
@@ -988,6 +811,5 @@ def unregister():
     bpy.utils.unregister_class(SelectParams)
     bpy.utils.unregister_class(ImportPhysics)
     bpy.utils.unregister_class(ExportPhysics)
-    bpy.utils.unregister_class(ExportPhysicsBinary)
     bpy.types.TOPBAR_MT_file_import.remove(MenuImport)
     bpy.types.TOPBAR_MT_file_export.remove(MenuExport)
