@@ -16,7 +16,7 @@ bl_info = {
     "author": "kreny",
     "description": "",
     "blender": (2, 80, 0),
-    "version": (0, 1, 5),
+    "version": (0, 1, 6),
     "location": "",
     "warning": "",
     "category": "Breath of the Wild",
@@ -39,29 +39,49 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 
-def physics_to_obj(self, context, filepath):
-    filepath_obj = filepath + ".temp.obj"
-    output = ""
-    obj_num = 0
-    obj_template = "o Shape_{}\n"
+def physics_to_objs(self, context, filepath) -> list:
+    filepath_obj_template = (
+        filepath.replace(".temp", "")
+        .replace(".yml", "")
+        .replace(".bphysics", "")
+        .replace(".physics", "")
+        + "_{}.obj"
+    )
+    obj_template = "o {}_Physics\n"
     vert_template = "v {} {} {}\n"
 
     with open(filepath, "r") as f:
-        for line in f.readlines():
-            line = line.lstrip()
-            if line.startswith("vertex_num"):
-                output += obj_template.format(obj_num)
-                obj_num += 1
-            elif line.startswith("vertex_"):
-                split = line.split("[")
-                strip = split[1].rstrip("\n")
-                strip = strip.rstrip("]")
-                coords = strip.split(", ")
-                output += vert_template.format(*coords)
+        lines = f.readlines()
 
-    with open(filepath_obj, "w") as f:
-        f.write(output)
-    return filepath_obj
+    outputs = []
+    object_names = []
+    output = ""
+
+    for line in lines:
+        line = line.lstrip()
+        if line.startswith("rigid_body_name"):
+            if output:
+                outputs.append(output)
+                output = ""
+            obj_name = line.split(" ")[-1].rstrip("\n")
+            output += obj_template.format(obj_name)
+            object_names.append(obj_name)
+        elif line.startswith("vertex_") and not line.startswith("vertex_num"):
+            split = line.split("[")
+            strip = split[1].rstrip("\n")
+            strip = strip.rstrip("]")
+            coords = strip.split(", ")
+            output += vert_template.format(*coords)
+    else:
+        outputs.append(output)
+
+    filepaths_obj = []
+    for output, obj_name in zip(outputs, object_names):
+        filepath_obj = filepath_obj_template.format(obj_name)
+        with open(filepath_obj, "w") as f:
+            f.write(output)
+        filepaths_obj.append(filepath_obj)
+    return filepaths_obj
 
 
 def parse_physics(self, context, filepath):
@@ -80,18 +100,20 @@ def parse_physics(self, context, filepath):
     else:
         filepath_yml = filepath
 
-    filepath_obj = physics_to_obj(self, context, filepath_yml)
+    filepaths_obj = physics_to_objs(self, context, filepath_yml)
     if filepath_yml.endswith(".temp"):
         os.remove(filepath_yml)
 
     try:
-        bpy.ops.import_scene.obj("EXEC_DEFAULT", filepath=filepath_obj)
+        for filepath_obj in filepaths_obj:
+            bpy.ops.import_scene.obj("EXEC_DEFAULT", filepath=filepath_obj)
     except Exception as e:
         print(e)
         self.report({"ERROR"}, f"{e}")
         return {"CANCELLED"}
     finally:
-        os.remove(filepath_obj)
+        for filepath_obj in filepaths_obj:
+            os.remove(filepath_obj)
     self.report({"INFO"}, "Completed successfully")
     return {"FINISHED"}
 
@@ -379,7 +401,7 @@ def change_extension(self, context):
     filepath = self.filepath.split("/")
     filename = filepath[-1]
     ext = ".bphysics" if self.binary else ".physics.yml"
-    self.filepath = "/".join(filepath[:-1])+filename+ext
+    self.filepath = "/".join(filepath[:-1]) + filename + ext
     print(self.filepath)
 
 
@@ -571,7 +593,7 @@ class ExportPhysics(Operator, ExportHelper):
         name="Binary",
         description="Export as Binary Physics file (.bphysics)",
         default=True,
-        update=change_extension
+        update=change_extension,
     )
 
     physics_type: EnumProperty(
